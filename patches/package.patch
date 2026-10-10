@@ -1,0 +1,12 @@
+--- a/package.json
++++ b/package.json
+@@ -12,5 +12,6 @@
+     "extract-zip": "^2.0.1",
+     "node-unrar-js": "2.0.2"
+   },
+-  "homepage": "https://melty.gg"
+-}
+\ No newline at end of file
++  "homepage": "https://melty.gg",
++  "desktopName": "gg.melty.app.desktop"
++}

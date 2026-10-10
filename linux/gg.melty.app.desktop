@@ -1,0 +1,19 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Melty
+GenericName=Game Mashups
+Comment=Game mashups and mods powered by Steam and Proton
+Comment[pt_BR]=Mashups e mods de jogos usando Steam e Proton
+Comment[es]=Mashups y mods de juegos con Steam y Proton
+Comment[fr]=Mashups et mods de jeux avec Steam et Proton
+Comment[de]=Spiel-Mashups und Mods mit Steam und Proton
+Comment[it]=Mashup e mod dei giochi con Steam e Proton
+Comment[ja]=Steam と Proton でゲーム Mod とマッシュアップ
+Exec=melty-linux %u
+Icon=gg.melty.app
+Terminal=false
+Categories=Game;Utility;
+MimeType=x-scheme-handler/melty;
+StartupNotify=true
+StartupWMClass=gg.melty.app

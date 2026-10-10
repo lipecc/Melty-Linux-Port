@@ -1,0 +1,333 @@
+#!/usr/bin/env bash
+# Melty Linux Port 1.0.72 - Steam/Proton and native desktop installer.
+set -euo pipefail
+VERSION="39.8.10"
+DESKTOP_ID="gg.melty.app"
+DESKTOP_FILE="$DESKTOP_ID.desktop"
+SELF_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+APP_RESOURCES="$SELF_DIR/usr/share/melty"
+APP_GUI="$SELF_DIR/usr/lib/melty/gui-downloader"
+INSTALL_GUI="$SELF_DIR/usr/lib/melty/gui-installer"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+PROGRAM_DIR="$DATA_HOME/Melty/Programs"
+ELECTRON_DIR="$PROGRAM_DIR/Electron/$VERSION"
+TOOLS_DIR="$PROGRAM_DIR/Tools"
+DOWNLOADS_DIR="$DATA_HOME/Melty/Downloads"
+LEGACY_ELECTRON="$CACHE_HOME/melty-linux-port/electron-$VERSION"
+LOG_DIR="$STATE_HOME/melty-linux-port"
+LOG_FILE="$LOG_DIR/launcher.log"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+LANGUAGE_FILE="$CONFIG_HOME/Melty/language"
+# Explicit MELTY_LANG overrides a previously selected language.
+if [[ -z "${MELTY_LANG:-}" && -r "$LANGUAGE_FILE" ]]; then
+    IFS= read -r selected_language < "$LANGUAGE_FILE" || true
+    case "$selected_language" in
+      en|pt-BR|es|fr|de|it|ja) export MELTY_LANG="$selected_language" ;;
+    esac
+fi
+INSTALL_ROOT="$DATA_HOME/Melty"
+INSTALL_APP="$INSTALL_ROOT/Melty.AppImage"
+INSTALL_BIN="$INSTALL_ROOT/bin/melty-linux"
+ICON_SOURCE="$SELF_DIR/usr/share/icons/hicolor/512x512/apps/$DESKTOP_ID.png"
+ICON_DEST="$DATA_HOME/icons/hicolor/512x512/apps/$DESKTOP_ID.png"
+APP_DESKTOP="$DATA_HOME/applications/$DESKTOP_FILE"
+mkdir -p "$PROGRAM_DIR/Electron" "$TOOLS_DIR" "$DOWNLOADS_DIR" "$LOG_DIR"
+log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG_FILE" >&2; }
+
+# Escape absolute paths used inside freedesktop Exec= double quotes.
+desktop_escape() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//\$/\\\$}"
+  value="${value//\`/\\\`}"
+  printf '%s' "$value"
+}
+
+register_desktop() {
+    local origin="${APPIMAGE:-}"
+    if [[ -z "$origin" || ! -f "$origin" ]]; then
+        log 'WARNING: source AppImage path unavailable; XDG integration unchanged.'
+        return 1
+    fi
+    mkdir -p "$INSTALL_ROOT/bin" "$(dirname "$APP_DESKTOP")" "$(dirname "$ICON_DEST")"
+    if [[ "$origin" != "$INSTALL_APP" ]] && ! cmp -s -- "$origin" "$INSTALL_APP"; then
+        local temp
+        temp="$(mktemp "$INSTALL_ROOT/.Melty.AppImage.XXXXXXXX")"
+        if cp -- "$origin" "$temp" && chmod 755 "$temp" && mv -f -- "$temp" "$INSTALL_APP"; then
+            log "AppImage installed/updated at $INSTALL_APP"
+        else
+            rm -f -- "$temp"
+            log 'ERROR: failed to install AppImage for external callback links.'
+            return 1
+        fi
+    fi
+    if [[ ! -x "$INSTALL_APP" ]]; then
+        log 'ERROR: installed AppImage is not executable.'
+        return 1
+    fi
+    local quoted_app quoted_bin
+    quoted_app="$(desktop_escape "$INSTALL_APP")"
+    quoted_bin="$(desktop_escape "$INSTALL_BIN")"
+    local temp_bin="$INSTALL_BIN.tmp.$$"
+    cat > "$temp_bin" <<BINSCRIPT
+#!/usr/bin/env bash
+# Stable Melty launcher. Forwards melty:// links unchanged to the main Electron process.
+exec "$quoted_app" "\$@"
+BINSCRIPT
+    chmod 755 "$temp_bin"
+    mv -f -- "$temp_bin" "$INSTALL_BIN"
+    if [[ -f "$ICON_SOURCE" ]]; then
+        cp -f -- "$ICON_SOURCE" "$ICON_DEST"
+    fi
+    local temp_desktop="$APP_DESKTOP.tmp.$$"
+    cat > "$temp_desktop" <<DESKTOP
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Melty
+GenericName=Game Mashups
+Comment=Steam game mashups and mods for Linux
+Comment[pt_BR]=Mashups e mods de jogos Steam no Linux
+Comment[es]=Mashups y mods de juegos Steam para Linux
+Comment[fr]=Mashups et mods de jeux Steam pour Linux
+Comment[de]=Steam-Spiel-Mashups und Mods für Linux
+Comment[it]=Mashup e mod dei giochi Steam per Linux
+Comment[ja]=Linux 向け Steam ゲームのマッシュアップと Mod
+Exec="$quoted_bin" %u
+TryExec=$INSTALL_BIN
+Icon=$DESKTOP_ID
+Terminal=false
+Categories=Game;Utility;
+MimeType=x-scheme-handler/melty;
+StartupNotify=true
+StartupWMClass=$DESKTOP_ID
+DESKTOP
+    chmod 644 "$temp_desktop"
+    mv -f -- "$temp_desktop" "$APP_DESKTOP"
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$(dirname "$APP_DESKTOP")" >/dev/null 2>&1 || true
+    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -f -t "$DATA_HOME/icons/hicolor" >/dev/null 2>&1 || true
+    fi
+    # The XDG handler must be registered to the installed .desktop file,
+    # not to the downloaded Electron binary or its ephemeral extraction path.
+    if command -v xdg-mime >/dev/null 2>&1; then
+        xdg-mime default "$DESKTOP_FILE" x-scheme-handler/melty >/dev/null 2>&1 || log 'WARNING: xdg-mime could not register the protocol.'
+    elif command -v gio >/dev/null 2>&1; then
+        gio mime x-scheme-handler/melty "$DESKTOP_FILE" >/dev/null 2>&1 || log 'WARNING: gio could not register the protocol.'
+    else
+        log 'WARNING: xdg-mime and gio are unavailable; cannot register melty://.'
+    fi
+    log "GNOME/KDE integration: $APP_DESKTOP | ícone: $ICON_DEST"
+}
+
+case "${1:-}" in
+    --set-language)
+        code="${2:-}"
+        case "$code" in
+          en|pt-BR|es|fr|de|it|ja)
+            mkdir -p "$CONFIG_HOME/Melty"
+            printf '%s\n' "$code" > "$LANGUAGE_FILE"
+            printf 'Melty installer language: %s\n' "$code"
+            ;;
+          *) echo 'Usage: Melty.AppImage --set-language {en|pt-BR|es|fr|de|it|ja}' >&2; exit 2 ;;
+        esac
+        exit 0 ;;
+    --install|--registrar|--register-protocol|--configurar-integracao)
+        register_desktop
+        echo "Melty: installed XDG integration: $APP_DESKTOP"
+        if command -v xdg-mime >/dev/null 2>&1; then
+            echo "Handler: $(xdg-mime query default x-scheme-handler/melty 2>/dev/null || true)"
+        fi
+        exit 0 ;;
+    --uninstall)
+        # Only remove the installed app and desktop integration, not user data,
+        # Steam game files, Proton prefixes or cached Electron runtimes.
+        if [[ -f "$APP_DESKTOP" ]] && grep -q '^Icon=gg.melty.app$' "$APP_DESKTOP"; then
+            rm -f -- "$APP_DESKTOP"
+        fi
+        rm -f -- "$INSTALL_BIN" "$INSTALL_APP" "$ICON_DEST"
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database "$DATA_HOME/applications" >/dev/null 2>&1 || true
+        fi
+        printf 'Melty launcher removed; downloads and game data have been preserved.\n'
+        exit 0 ;;
+    --diagnostico|--diagnostic)
+        printf 'Melty Linux Port 1.0.72 rev.7\nElectron: %s\nPrograms: %s\nDownloads: %s\nLogs: %s\nInstalled AppImage: %s\nDesktop file: %s\nGNOME icon: %s\nRuntime installed: ' "$ELECTRON_DIR" "$PROGRAM_DIR" "$DOWNLOADS_DIR" "$LOG_FILE" "$INSTALL_APP" "$APP_DESKTOP" "$ICON_DEST"
+        if [[ -x "$ELECTRON_DIR/electron" ]]; then echo yes; else echo no; fi
+        if command -v xdg-mime >/dev/null 2>&1; then
+            echo "Handler melty://: $(xdg-mime query default x-scheme-handler/melty 2>/dev/null || true)"
+        fi
+        exit 0 ;;
+    --abrir-pasta|--open-programs)
+        if command -v xdg-open >/dev/null 2>&1; then xdg-open "$PROGRAM_DIR"; else printf '%s\n' "$PROGRAM_DIR"; fi
+        exit 0 ;;
+    --diagnostico-mods|--mod-diagnostic)
+        if command -v node >/dev/null 2>&1; then
+            node "$APP_RESOURCES/steam-diagnostic.cjs" --mods
+        elif [[ -x "$ELECTRON_DIR/electron" ]]; then
+            ELECTRON_RUN_AS_NODE=1 "$ELECTRON_DIR/electron" "$APP_RESOURCES/steam-diagnostic.cjs" --mods
+        else
+            echo 'Run Melty once before using diagnostics.' >&2
+            exit 1
+        fi
+        exit $? ;;
+    --diagnostico-processos|--process-diagnostic)
+        if command -v node >/dev/null 2>&1; then
+            node "$APP_RESOURCES/linux-processes.mjs" --diagnostico-processos
+        elif [[ -x "$ELECTRON_DIR/electron" ]]; then
+            ELECTRON_RUN_AS_NODE=1 "$ELECTRON_DIR/electron" "$APP_RESOURCES/linux-processes.mjs" --diagnostico-processos
+        else
+            echo 'Run Melty once before using this diagnostic.' >&2
+            exit 1
+        fi
+        exit $? ;;
+    --diagnostico-steam|--steam-diagnostic)
+        if command -v node >/dev/null 2>&1; then
+            node "$APP_RESOURCES/steam-diagnostic.cjs"
+        elif [[ -x "$ELECTRON_DIR/electron" ]]; then
+            ELECTRON_RUN_AS_NODE=1 "$ELECTRON_DIR/electron" "$APP_RESOURCES/steam-diagnostic.cjs"
+        else
+            echo 'Run Melty once to install Electron before using this diagnostic.' >&2
+            exit 1
+        fi
+        exit $? ;;
+esac
+
+# Opening a downloaded AppImage displays a proper installer, while desktop
+# shortcuts and OAuth deep links launch directly without another prompt.
+# All integration is per-user and works without sudo.
+installer_mode=""
+origin="${APPIMAGE:-}"
+if [[ -z "${1:-}" || "${1:-}" != melty://* ]]; then
+    if [[ -n "$origin" && -f "$origin" && "$origin" != "$INSTALL_APP" ]]; then
+        if [[ ! -x "$INSTALL_APP" ]] || ! cmp -s -- "$origin" "$INSTALL_APP"; then
+            if [[ -n "${DISPLAY:-}" && -x "$INSTALL_GUI" ]]; then
+                installer_mode="--new"
+                [[ -x "$INSTALL_APP" ]] && installer_mode="--update"
+                result=0
+                "$INSTALL_GUI" "$installer_mode" || result=$?
+                # The installer saves language selection before exiting.
+                if [[ -r "$LANGUAGE_FILE" ]]; then
+                    IFS= read -r selected_language < "$LANGUAGE_FILE" || true
+                    case "$selected_language" in
+                      en|pt-BR|es|fr|de|it|ja) export MELTY_LANG="$selected_language" ;;
+                    esac
+                fi
+                case "$result" in
+                    0) register_desktop || { log 'ERROR: failed to install desktop integration'; exit 1; } ;;
+                    10) log 'Running without installing; Google sign-in deep links require installation.' ;;
+                    11) exit 0 ;;
+                    4) register_desktop || true ;;
+                    *) log "Installer error: $result"; exit 1 ;;
+                esac
+            else
+                # Headless / native Wayland-only fallback preserves the existing
+                # auto-install behavior of the previously working port.
+                register_desktop || log 'WARNING: desktop integration unavailable.'
+            fi
+        else
+            # Already installed, but repair any missing shortcut or mime mapping.
+            [[ -f "$APP_DESKTOP" && -f "$ICON_DEST" ]] || register_desktop || true
+        fi
+    else
+        [[ -f "$APP_DESKTOP" && -f "$ICON_DEST" ]] || register_desktop || true
+    fi
+else
+    # Do not prompt for installation during OAuth callback.
+    [[ -x "$INSTALL_APP" ]] || register_desktop || true
+fi
+
+if [[ ! -e "$ELECTRON_DIR" && -x "$LEGACY_ELECTRON/electron" ]]; then
+    log "Migrating existing Electron download to $ELECTRON_DIR"
+    if mv -- "$LEGACY_ELECTRON" "$ELECTRON_DIR"; then
+        log 'Reused Electron; no new download required.'
+    else
+        log 'WARNING: migration failed; Electron may be downloaded again.'
+    fi
+fi
+if [[ ! -x "$ELECTRON_DIR/electron" ]]; then
+    if ! command -v unzip >/dev/null 2>&1; then
+        log 'ERROR: unzip is not installed. EndeavourOS: sudo pacman -S unzip'
+        exit 1
+    fi
+    log "Downloading native Electron $VERSION para Linux."
+    DOWNLOAD_TEMP="$(mktemp -d "$DOWNLOADS_DIR/install.XXXXXXXX")"
+    cleanup() { rm -rf -- "$DOWNLOAD_TEMP"; }
+    trap cleanup EXIT
+    ARCHIVE="$DOWNLOAD_TEMP/electron.zip"
+    FILE="electron-v${VERSION}-linux-x64.zip"
+    PRIMARY="https://github.com/electron/electron/releases/download/v${VERSION}/${FILE}"
+    MIRROR="https://mirrors.huaweicloud.com/electron/${VERSION}/${FILE}"
+    if [[ -n "${DISPLAY:-}" && -x "$APP_GUI" ]] && command -v curl >/dev/null 2>&1; then
+        log 'Opening Melty graphical downloader.'
+        if ! "$APP_GUI" "$ARCHIVE" "$PRIMARY" "$MIRROR" >>"$LOG_FILE" 2>&1; then
+            log 'ERROR: download failed or was cancelled.'
+            exit 1
+        fi
+    else
+        log 'No graphical display; using terminal download progress.'
+        if command -v curl >/dev/null 2>&1; then
+            if ! curl -fL --retry 2 --connect-timeout 25 --progress-bar -o "$ARCHIVE" "$PRIMARY"; then
+                log 'Trying alternate Electron download mirror.'
+                curl -fL --retry 2 --connect-timeout 25 --progress-bar -o "$ARCHIVE" "$MIRROR" || { log 'ERROR: both download servers failed.'; exit 1; }
+            fi
+        elif command -v wget >/dev/null 2>&1; then
+            wget -O "$ARCHIVE" "$PRIMARY" || wget -O "$ARCHIVE" "$MIRROR" || { log 'ERROR: both download servers failed.'; exit 1; }
+        else
+            log 'ERROR: install curl or wget before first launch.'
+            exit 1
+        fi
+    fi
+    if ! unzip -tqq "$ARCHIVE"; then log 'ERROR: downloaded ZIP archive is invalid.'; exit 1; fi
+    mkdir -p "$DOWNLOAD_TEMP/runtime"
+    log 'Extracting Electron...'
+    unzip -q "$ARCHIVE" -d "$DOWNLOAD_TEMP/runtime" || { log 'ERROR: failed to extract Electron.'; exit 1; }
+    chmod +x "$DOWNLOAD_TEMP/runtime/electron" "$DOWNLOAD_TEMP/runtime/chrome-sandbox" 2>/dev/null || true
+    if [[ ! -x "$DOWNLOAD_TEMP/runtime/electron" ]]; then log 'ERROR: Electron binary missing.'; exit 1; fi
+    if [[ -e "$ELECTRON_DIR" ]]; then log "ERROR: Electron directory exists but is incomplete: $ELECTRON_DIR"; exit 1; fi
+    mv -- "$DOWNLOAD_TEMP/runtime" "$ELECTRON_DIR"
+    log "Electron installed at $ELECTRON_DIR"
+    cleanup
+    trap - EXIT
+fi
+mkdir -p "$ELECTRON_DIR/resources"
+# Keep the running Electron process safe when a second instance is opened
+# by melty://: never truncate the ASAR it could currently be reading.
+if ! cmp -s -- "$APP_RESOURCES/app.asar" "$ELECTRON_DIR/resources/app.asar"; then
+    next_asar="$ELECTRON_DIR/resources/.app.asar.$$"
+    cp -- "$APP_RESOURCES/app.asar" "$next_asar"
+    mv -f -- "$next_asar" "$ELECTRON_DIR/resources/app.asar"
+fi
+if [[ -L "$ELECTRON_DIR/resources/app.asar.unpacked" ]]; then rm -f "$ELECTRON_DIR/resources/app.asar.unpacked"; fi
+if [[ ! -e "$ELECTRON_DIR/resources/app.asar.unpacked" ]]; then
+    ln -s "$APP_RESOURCES/app.asar.unpacked" "$ELECTRON_DIR/resources/app.asar.unpacked"
+fi
+export MELTY_PROD_SESSION=1
+export MELTY_WEB_URL="${MELTY_WEB_URL:-https://melty.gg}"
+export MELTY_API_URL="${MELTY_API_URL:-https://melty.gg}"
+export ELECTRON_OZONE_PLATFORM_HINT=auto
+# Electron matches the GNOME Dock icon through this desktop application identity.
+export ELECTRON_DESKTOP_FILE_NAME="$DESKTOP_FILE"
+FLAGS=()
+case "${MELTY_LANG:-${LC_ALL:-${LANG:-en}}}" in
+  pt*|PT*) FLAGS+=(--lang=pt-BR) ;;
+  en*|EN*) FLAGS+=(--lang=en-US) ;;
+  es*|ES*) FLAGS+=(--lang=es) ;;
+  fr*|FR*) FLAGS+=(--lang=fr) ;;
+  de*|DE*) FLAGS+=(--lang=de) ;;
+  it*|IT*) FLAGS+=(--lang=it) ;;
+  ja*|JA*) FLAGS+=(--lang=ja) ;;
+esac
+if [[ "${MELTY_DISABLE_GPU:-0}" == 1 ]]; then FLAGS+=(--disable-gpu); fi
+if [[ "${MELTY_ALLOW_NO_SANDBOX:-0}" == 1 ]]; then
+    log 'WARNING: Chromium sandbox disabled by user setting.'
+    FLAGS+=(--no-sandbox)
+fi
+log "Starting production Melty: $MELTY_WEB_URL (Electron $VERSION)"
+log "Handling external sign-in via $DESKTOP_FILE — XDG handler registered."
+exec "$ELECTRON_DIR/electron" "${FLAGS[@]}" "$@" >>"$LOG_FILE" 2>&1

@@ -1,0 +1,16 @@
+import {matchSteamMainExecutable, steamIdFromLink, launchSteamApp} from '../src/linux-steam-bridge.mjs';
+import { EventEmitter } from 'node:events';
+import assert from 'node:assert/strict';
+const rows=[{launcher:'Steam',storeAppId:'3527290',installPath:'/home/test/.local/share/Steam/steamapps/common/PEAK',displayName:'PEAK'}];
+assert.equal(matchSteamMainExecutable('/home/test/.local/share/Steam/steamapps/common/PEAK/PEAK.exe',rows)?.appId,'3527290');
+assert.equal(matchSteamMainExecutable('/home/test/.local/share/Steam/steamapps/common/PEAK/CustomLoader.exe',rows),null);
+assert.equal(matchSteamMainExecutable('/home/test/.local/share/Steam/steamapps/common/PEAK2/PEAK.exe',rows),null);
+assert.equal(steamIdFromLink('steam://rungameid/3527290'),'3527290');
+assert.equal(steamIdFromLink('https://malware.example/3527290'),null);
+const calls=[];
+const mockSpawn=(binary,args,options)=>{calls.push([binary,args,options]);const child=new EventEmitter();child.unref=()=>{};queueMicrotask(()=>child.emit('spawn'));return child;};
+const out=await launchSteamApp('3527290',['--example'], { command:{command:'/usr/bin/steam',prefix:[]},spawnImpl:mockSpawn});
+assert.equal(out.method,'steam-cli');
+assert.deepEqual(calls[0][1],['-applaunch','3527290','--example']);
+assert.equal(calls[0][0],'/usr/bin/steam');
+console.log('OK: PEAK via Steam AppID, loader preserved, paths, URI, arguments');

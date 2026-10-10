@@ -1,0 +1,29 @@
+--- a/src/preload/preload.cjs
++++ b/src/preload/preload.cjs
+@@ -159,16 +159,16 @@
+   });
+ }
+ 
+-// Windows draws the minimize / maximize / close buttons itself, over the page's top right.
+-if (USE_WINDOWS_TITLEBAR_OVERLAY) {
+-  addStyle(
+-    "melty-titlebar-style",
+-    `
+-      .desktop-window-controls { display: none !important; }
+-      .is-desktop .topbar { padding-right: 148px !important; }
+-    `
+-  );
+-}
++// On GNOME/KDE the native titlebar already supplies minimize/maximize/close.
++// On Windows, the Chromium titlebar overlay supplies these buttons. Avoid
++// showing the site's own desktop controls *as well* on either platform.
++addStyle(
++  "melty-titlebar-style",
++  `
++    .desktop-window-controls { display: none !important; }
++    ${USE_WINDOWS_TITLEBAR_OVERLAY ? ".is-desktop .topbar { padding-right: 148px !important; }" : ""}
++  `
++);
+ 
+ // The rail and header stay put; only the page's content scrolls.
+ addStyle(

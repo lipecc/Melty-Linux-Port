@@ -1,0 +1,13 @@
+dist/inspector-worker.cjs
+dist/steam-progress-worker.cjs
+dist/store-record-worker.cjs
+dist/window-tuck.exe
+dist/windows-inspector.exe
+node_modules/7zip-bin/7x.sh
+node_modules/7zip-bin/LICENSE.txt
+node_modules/7zip-bin/index.js
+node_modules/7zip-bin/linux/x64/7za
+node_modules/7zip-bin/linux/x64/build.sh
+node_modules/7zip-bin/linux/x64/do-build.sh
+node_modules/7zip-bin/package.json
+src/preload/preload.cjs

@@ -1,0 +1,324 @@
+--- a/dist/main.bundle.mjs
++++ b/dist/main.bundle.mjs
+@@ -1,5 +1,9 @@
+ 
+ import { createRequire as __melty_createRequire } from 'node:module';
++import { readLinuxGameProcesses as meltyLinuxProcessRows, applyLinuxRunningInventory as meltyApplyRunning } from './linux-processes.mjs';
++import { steamIdFromLink as meltySteamId, matchSteamMainExecutable as meltySteamMain, launchSteamApp as meltyLaunchSteam } from './linux-steam-bridge.mjs';
++import { prepareSteamProtonBridge, acceptSteamProtonBridge } from './linux-proton-bridge.mjs';
++import { clipboard as meltyClipboard } from "electron";
+ import { fileURLToPath as __melty_fileURLToPath } from 'node:url';
+ import { dirname as __melty_dirname, join as __melty_join } from 'node:path';
+ import { mkdirSync as __melty_mkdir, appendFileSync as __melty_append } from 'node:fs';
+@@ -27710,7 +27714,7 @@
+ import { app as app2 } from "electron";
+ var PRODUCTION_URL = "https://melty.gg";
+ function loadConfig() {
+-  const isDev = !app2.isPackaged || process.env.MELTY_DEV_DESKTOP === "1";
++  const isDev = process.env.MELTY_DEV_DESKTOP === "1"; // Linux port: Electron bootstrap is not an electron-builder package
+   const apiBaseUrl = process.env.MELTY_API_URL?.trim() || (isDev ? "http://localhost:3000" : PRODUCTION_URL);
+   return {
+     apiBaseUrl,
+@@ -28331,6 +28335,8 @@
+   }));
+ }
+ async function legacyProcesses() {
++  if (process.platform === "linux")
++    return meltyLinuxProcessRows();
+   if (process.platform !== "win32")
+     return [];
+   const script = "$rows = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,ExecutablePath,CreationDate | ForEach-Object { [pscustomobject]@{ ProcessId = [int]$_.ProcessId; ParentProcessId = [int]$_.ParentProcessId; Name = [string]$_.Name; ExecutablePath = $_.ExecutablePath; CreationDate = $(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fff') + 'Z' } else { $null }) } }); ConvertTo-Json -InputObject $rows -Compress -Depth 2";
+@@ -28539,6 +28545,8 @@
+     return pending;
+   };
+   function nativeProcesses2(fresh = false) {
++    // windows-inspector.exe is not executable on Linux: inspect /proc instead.
++    if (process.platform === "linux") return meltyLinuxProcessRows();
+     if (!inspector.state.ready) {
+       inspector.start();
+       return fromLegacy(fresh);
+@@ -29073,6 +29081,21 @@
+     roots.push(posix.join(options.homeDirectory ?? homedir(), "Library", "Application Support", "Steam"));
+     return uniquePosixPaths(roots);
+   }
++  if (platform2 === "linux") {
++    const home = options.homeDirectory ?? homedir();
++    const dataHome = env.XDG_DATA_HOME || posix.join(home, ".local", "share");
++    // Native Steam, Flatpak Steam, and legacy Steam root paths on Linux.
++    roots.push(
++      posix.join(dataHome, "Steam"),
++      posix.join(home, ".steam", "steam"),
++      posix.join(home, ".steam", "root"),
++      posix.join(home, ".steam", "debian-installation"),
++      posix.join(home, "snap", "steam", "common", ".local", "share", "Steam"),
++      posix.join(home, ".var", "app", "com.valvesoftware.Steam", "data", "Steam"),
++      posix.join(home, ".var", "app", "com.valvesoftware.Steam", ".local", "share", "Steam")
++    );
++    return uniquePosixPaths(roots);
++  }
+   if (platform2 === "win32") {
+     let registryFailure;
+     try {
+@@ -30156,6 +30179,8 @@
+   };
+ }
+ async function snapshotInstalledGameProcessState(options = {}) {
++  if (process.platform === "linux")
++    return installedGameProcessStateFromProcesses(await meltyLinuxProcessRows());
+   if (process.platform !== "win32") {
+     return installedGameProcessStateFromProcesses([]);
+   }
+@@ -30163,6 +30188,8 @@
+   return installedGameProcessStateFromProcesses(processes);
+ }
+ async function snapshotRunningProcesses() {
++  if (process.platform === "linux")
++    return runningProcessSnapshotFromProcesses(await meltyLinuxProcessRows());
+   if (process.platform !== "win32")
+     return runningProcessSnapshotFromProcesses([]);
+   const processes = await nativeProcesses();
+@@ -33041,7 +33068,7 @@
+   return targets[0] ?? steamLaunchTargetFromRequest(request);
+ }
+ async function resolveInstalledGameLaunchTarget(request) {
+-  if (process.platform === "darwin") {
++  if (process.platform === "darwin" || process.platform === "linux") {
+     return resolveInstalledGameLaunchTargetFromEvidence(request, await scanSteamManifests());
+   }
+   if (process.platform !== "win32")
+@@ -33225,15 +33252,20 @@
+   const startedAt = Date.now();
+   const includeRunning = options.includeRunning !== false;
+   const platform2 = options.platform ?? process.platform;
+-  if (platform2 === "darwin") {
++  if (platform2 === "darwin" || platform2 === "linux") {
++    // On Linux the Steam manifest provider works natively; the old
++    // Windows-only fallback incorrectly returned [] for every Steam library.
+     const steam = await measureInstalledGameInventoryStage("steam", () => scanSteamManifests({ steamRoots: options.steamRoots }), (items2) => items2.length);
+     const inventory3 = buildInstalledGameInventory(steam.value ?? [], {
+       includeLocalIconSourcePath: options.includeLocalIconSourcePath
+-    }).map((game) => ({
+-      ...game,
+-      // macOS lists Steam games for launching only; running-process detection is Windows-only.
+-      running: false
+-    }));
++    }).map((game) => ({ ...game, running: false }));
++    if (platform2 === "linux" && includeRunning) {
++      try {
++        meltyApplyRunning(inventory3, await meltyLinuxProcessRows());
++      } catch (error) {
++        console.warn('[Melty Linux] Unable to read running game processes:', error?.message ?? error);
++      }
++    }
+     const skipped = (stage) => skippedInstalledGameInventoryStage(stage);
+     deliverInstalledGameInventoryDiagnostics(options.onDiagnostics, {
+       version: 1,
+@@ -33380,6 +33412,14 @@
+ async function resolveSteamExe() {
+   if (cachedSteamExe)
+     return cachedSteamExe;
++  if (process.platform === "linux") {
++    for (const candidate of [process.env.MELTY_STEAM_EXECUTABLE, "/usr/bin/steam", "/usr/games/steam", "/usr/local/bin/steam", "/var/lib/flatpak/exports/bin/com.valvesoftware.Steam", join7(process.env.HOME ?? "", ".local", "share", "flatpak", "exports", "bin", "com.valvesoftware.Steam")]) {
++      if (candidate && existsSync3(candidate))
++        return cachedSteamExe = candidate;
++    }
++    // A flatpak export wrapper also accepts -applaunch appId when called directly.
++    return null;
++  }
+   const out = await new Promise((resolve12) => {
+     execFile6("reg", ["query", "HKCU\\Software\\Valve\\Steam", "/v", "SteamExe"], { windowsHide: true }, (error3, stdout) => resolve12(error3 ? "" : stdout));
+   });
+@@ -33446,7 +33486,12 @@
+ }
+ async function openGame(target, extraArgs = []) {
+   if (target.kind === "uri") {
+-    const steamAppId = extraArgs.length ? steamAppIdFromUri(target.uri) : null;
++    const steamAppId = process.platform === "linux" ? meltySteamId(target.uri) : extraArgs.length ? steamAppIdFromUri(target.uri) : null;
++    if (process.platform === "linux" && steamAppId) {
++      const result = await meltyLaunchSteam(steamAppId, extraArgs, { openExternal: (url) => shell2.openExternal(url) });
++      console.log(`[linux-steam] via ${result.method}: AppID=${steamAppId}`);
++      return;
++    }
+     const steamExe = steamAppId ? await resolveSteamExe() : null;
+     if (steamAppId && steamExe) {
+       const started = await spawnDetachedChecked(steamExe, ["-applaunch", steamAppId, ...extraArgs]).catch(() => false);
+@@ -33471,7 +33516,7 @@
+   } catch (error3) {
+     const code = spawnErrorCode(error3);
+     if (code !== "EACCES" && code !== "EPERM" && code !== "UNKNOWN") {
+-      throw new Error(`Windows refused to start ${basename3(target.executablePath)} (${describeSpawnError(error3)}).`);
++      throw new Error(`${process.platform === "win32" ? "Windows" : "Linux"} could not start ${basename3(target.executablePath)} (${describeSpawnError(error3)}). For Windows games installed via Steam on Linux, launch through Steam/Proton.`);
+     }
+     await launchViaWindowsShell(target.executablePath, args, target.cwd);
+   }
+@@ -48265,6 +48310,33 @@
+     return live;
+   return scan("mods");
+ }
++// Refresh running / stopped badges even when the Steam library screen is idle.
++// Only process presence is checked; no full manifest rescan or new network request.
++if (process.platform === "linux") {
++  let presenceBusy = false;
++  const timer = setInterval(async () => {
++    if (presenceBusy || scanning || !live || detectionState !== "ready") return;
++    presenceBusy = true;
++    try {
++      const rows = await meltyLinuxProcessRows();
++      if (scanning || !live) return;
++      const updated = live.map((item) => ({ ...item }));
++      meltyApplyRunning(updated, rows);
++      if (!updated.some((game, index) => game.running !== live[index].running)) return;
++      for (const [index, game] of updated.entries()) {
++        if (game.running !== live[index].running)
++          console.log(`[linux-games] ${game.displayName}: ${game.running ? "aberto" : "fechado"}`);
++      }
++      live = updated;
++      revision++;
++      cached = updated.map(forPage);
++      notifyInventory();
++    } catch (error) {
++      console.warn("[Melty Linux] Process status refresh failed:", error?.message ?? error);
++    } finally { presenceBusy = false; }
++  }, 3000);
++  timer.unref();
++}
+ function rescanSoon(reason) {
+   if (Date.now() - liveAt <= RESCAN_AFTER_MS)
+     return;
+@@ -59503,6 +59575,7 @@
+       try {
+         return await host.spawnDetached(plan.path, plan.args, plan.cwd, { hidden: options.hidden, ...plan.env ? { env: plan.env } : {} });
+       } catch (error3) {
++        if (error3 instanceof ModInstallError) throw error3;
+         const name = plan.path.split(/[\\/]/).pop() ?? plan.path;
+         console.warn(`[mods] launch of ${plan.path} failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
+         const code = error3?.code;
+@@ -66250,6 +66323,14 @@
+     app27.once("will-quit", unsubscribeGames);
+     const store = new ModStore(join42(rootEnv.modsDir, "state.json"));
+     const journal = new ModJournal({ modsDir: rootEnv.modsDir, store });
++    const linuxSteamMain = async (path) => {
++      if (process.platform !== "linux" || !/\.exe$/i.test(path)) return null;
++      const evidence = await scanSteamManifests().catch((error) => {
++        console.warn(`[linux-steam] manifest scan failed: ${error?.message ?? error}`);
++        return [];
++      });
++      return meltySteamMain(path, evidence, GAME_ALIASES);
++    };
+     const launchHost = {
+       async launchGame(game, args) {
+         if (game.inventory && game.source === "inventory") {
+@@ -66263,6 +66344,15 @@
+               deps3.log?.(`[mods] dev fake game: would start ${path}`);
+               return;
+             }
++            const steamMain = await linuxSteamMain(path);
++            if (steamMain) {
++              console.log(`[linux-steam] mod launch ${steamMain.game} via Steam AppID=${steamMain.appId} (catalog)`);
++              await openGame({kind: "uri", uri: `steam://rungameid/${steamMain.appId}`}, args);
++              return;
++            }
++            if (process.platform === "linux" && /\.(exe|bat|cmd)$/i.test(path)) {
++              throw new ModInstallError(`The Windows loader ${basename15(path)} must be launched through Proton. Melty will not start it outside Steam.`, "launch-unsupported");
++            }
+             await spawnDetachedWithPid(path, args, game.installDir);
+             return;
+           }
+@@ -66274,9 +66364,42 @@
+           deps3.log?.(`[mods] dev fake game: would start ${executable3} ${args.join(" ")}`.trim());
+           return void 0;
+         }
++        if (process.platform === "linux" && /\.(exe|bat|cmd)$/i.test(executable3)) {
++          const steamMain = await linuxSteamMain(executable3);
++          if (steamMain) {
++            const extraEnv = Object.fromEntries(Object.entries(options?.env ?? {}).filter(([key]) => !["SteamAppId", "SteamGameId"].includes(key)));
++            // Steam cannot retrofit environment variables onto an already-running client.
++            // A one-time Steam launch-option wrapper imports Melty's per-game env on every start.
++            // Do not request Steam launch-option changes for ordinary unmodified games.
++            const needsBridge = Object.keys(extraEnv).length > 0 || (await Promise.all(["winhttp.dll", "version.dll"].map((dll) => stat23(join42(dirname14(executable3), dll)).then((st) => st.isFile()).catch(() => false)))).some(Boolean);
++            const bridge = needsBridge ? await prepareSteamProtonBridge({appId: steamMain.appId, vars: extraEnv, gameDir: dirname14(executable3)}) : null;
++            if (bridge && !bridge.confirmed) {
++              const window2=BrowserWindow4.getFocusedWindow() ?? BrowserWindow4.getAllWindows()[0];
++              const details=`Este mod precisa ser iniciado pela Steam com as variáveis ${bridge.keys.join(", ") || "do Proton"}.\n\nSteam > Biblioteca > ${steamMain.game} > Propriedades > Geral > Opções de inicialização.\n\nCole:\n${bridge.launchOptions}\n\nNão apague outras opções sem antes integrá-las. Depois volte ao Melty e clique em Tentar de novo.`;
++              const opts={type:"info",title:"Configurar Steam e Proton para o Melty",message:"Configuração necessária uma única vez",detail:details,buttons:["Copiar configuração", "Já configurei — iniciar", "Cancelar"],defaultId:0,cancelId:2,noLink:true};
++              const answer=window2 ? await dialog2.showMessageBox(window2,opts) : await dialog2.showMessageBox(opts);
++              if (answer.response === 0) {
++                meltyClipboard.writeText(bridge.launchOptions);
++                await shell3.openExternal('steam://open/games').catch(()=>void 0);
++                throw new ModInstallError("Configuração copiada. Cole nas opções de inicialização do jogo na Steam, volte ao Melty e clique em Tentar de novo. Em seguida escolha 'Já configurei'.", "proton-setup-needed");
++              }
++              if (answer.response !== 1) throw new ModInstallError("Configuração do Proton cancelada.", "proton-setup-needed");
++              await acceptSteamProtonBridge(bridge);
++            }
++            console.log(bridge ? `[linux-proton] Steam AppID=${steamMain.appId}: env bridge prepared (${bridge.keys.join(", ")}); launch with Steam` : `[linux-steam] Steam AppID=${steamMain.appId}: standard launch`);
++            await openGame({ kind: "uri", uri: `steam://rungameid/${steamMain.appId}` }, args);
++            return void 0;
++          }
++          console.warn(`[linux-proton] Custom Windows mod loader cannot be started directly: ${basename15(executable3)}`);
++          throw new ModInstallError(`The Windows mod loader ${basename15(executable3)} requires Proton setup through Steam. Direct Linux execution would bypass Proton and the Steam game session.`, "launch-unsupported");
++        }
+         return spawnDetachedWithPid(executable3, args, cwd, options?.hidden === true, options?.env);
+       },
+       async openUri(uri) {
++        if (process.platform === "linux" && meltySteamId(uri)) {
++          await openGame({kind: "uri", uri});
++          return;
++        }
+         await shell3.openExternal(uri);
+       },
+       async openHtml(entryPath, title, context2) {
+@@ -66321,7 +66444,9 @@
+       runningMinecraftCopies: nativeMinecraftRunning,
+       firstStart: {
+         steamAppId: (game, steamAppIds) => readSteamAppId(game.installDir, steamAppIds),
+-        neverStarted: (game, steamAppIds) => readSteamNeverStarted(game.installDir, steamAppIds),
++        // Linux/Proton can report LastPlayed=0 in ACF even after playing;
++        // don't run the Windows-only first-start procedure on Linux.
++        neverStarted: (game, steamAppIds) => process.platform === "linux" ? Promise.resolve(false) : readSteamNeverStarted(game.installDir, steamAppIds),
+         programsIn,
+         running: async (names) => {
+           const snapshot2 = await snapshotRunningProcesses();
+@@ -67064,6 +67189,9 @@
+ var TITLEBAR = { color: "rgba(20, 20, 20, 0)", symbolColor: "#f4f5f2", height: 52 };
+ app30.setPath("userData", app30.commandLine.getSwitchValue("user-data-dir") || join46(app30.getPath("appData"), config.isDev ? "Melty Dev" : "Melty"));
+ app30.setName(TITLE);
++// Match the GNOME/KDE launcher id before Electron initialises Wayland/X11.
++if (process.platform === "linux")
++  app30.setDesktopName("gg.melty.app.desktop");
+ process.title = TITLE;
+ if (process.platform === "win32")
+   app30.setAppUserModelId(config.isDev ? "gg.melty.desktop.dev" : "gg.melty.desktop");
+@@ -67197,7 +67325,7 @@
+     autoHideMenuBar: true,
+     show,
+     paintWhenInitiallyHidden: false,
+-    titleBarStyle: "hidden",
++    titleBarStyle: windows ? "hidden" : "default",
+     ...windows ? { titleBarOverlay: TITLEBAR } : {},
+     webPreferences: {
+       contextIsolation: true,
+@@ -67540,6 +67668,13 @@
+     sendToPage("mods:state", state);
+   },
+   resolveSteamRoot: async () => {
++    if (process.platform === "linux") {
++      const roots = await discoverDefaultSteamRoots();
++      for (const root of roots) {
++        if ((await stat2(join6(root, "steamapps")).catch(() => null))?.isDirectory()) return root;
++      }
++      return null;
++    }
+     const steamExe = await resolveSteamExe();
+     return steamExe ? dirname28(steamExe) : null;
+   },
+@@ -67565,7 +67700,9 @@
+ });
+ app30.whenReady().then(() => withWatchdogOperation("startup", async () => {
+   Menu.setApplicationMenu(null);
+-  if (!config.isDev || process.env.MELTY_DEV_PROTOCOL === "1")
++  // Linux protocol registration is managed by the stable XDG desktop launcher.
++  // Electron's unpacked `electron` executable must not replace our handler.
++  if (process.platform !== "linux" && (!config.isDev || process.env.MELTY_DEV_PROTOCOL === "1"))
+     app30.setAsDefaultProtocolClient(PROTOCOL);
+   if (config.isDev && process.env.MELTY_LOCAL_TEST === "1") {
+     session4.defaultSession.webRequest.onBeforeRequest({ urls: ["*://*/api/bugs*", "https://*.sentry.io/*"] }, (_details, callback) => callback({ cancel: true }));
