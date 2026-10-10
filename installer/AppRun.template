@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Melty Linux 1.0.76 installer with SHA-256-pinned Linux port payload.
+set -euo pipefail
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PAYLOAD="$ROOT/payload/Melty-1.0.76.AppImage"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+INST_ROOT="$DATA_HOME/Melty"
+INST_APP="$INST_ROOT/Melty.AppImage"
+BACKUP_DIR="$INST_ROOT/Backups"
+LANG_FILE="$CONFIG_HOME/Melty/language"
+LOG_DIR="$STATE_HOME/melty-linux-port"
+LOG_FILE="$LOG_DIR/installer.log"
+GUI="$ROOT/usr/lib/melty/gui-installer"
+EXPECTED_SHA='@APP_SHA@'
+mkdir -p "$LOG_DIR"
+log(){ printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG_FILE" >&2; }
+
+verify_payload() {
+  [[ -f "$PAYLOAD" ]] || { log 'ERROR: embedded 1.0.76 AppImage is missing'; return 1; }
+  local hash
+  hash="$(sha256sum -- "$PAYLOAD" | cut -d' ' -f1)"
+  if [[ "$hash" != "$EXPECTED_SHA" ]]; then
+    log "ERROR: unexpected 1.0.76 AppImage checksum ($hash)"
+    return 1
+  fi
+}
+
+# Do not switch versions while the Electron runtime still has Melty open.
+melty_is_running() {
+  local cmdline first
+  for cmdline in /proc/[0-9]*/cmdline; do
+    [[ -r "$cmdline" ]] || continue
+    first=''
+    IFS= read -r -d '' first < "$cmdline" 2>/dev/null || true
+    case "$first" in
+      "$INST_ROOT"/Programs/Electron/*/electron) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+install_payload() {
+  verify_payload || return 1
+  mkdir -p "$INST_ROOT" "$BACKUP_DIR"
+  if ! cmp -s -- "$PAYLOAD" "$INST_APP"; then
+    if melty_is_running; then
+      log 'ERROR: Melty is still running. Close Melty (including its tray window) and retry the update.'
+      return 1
+    fi
+    if [[ -f "$INST_APP" ]]; then
+      local previous_sha backup_path
+      previous_sha="$(sha256sum -- "$INST_APP" | cut -c 1-12)"
+      backup_path="$BACKUP_DIR/Melty-backup-before-1.0.76-$previous_sha.AppImage"
+      if [[ ! -e "$backup_path" ]]; then
+        # Never delete the previous installed version without a backup.
+        cp -p -- "$INST_APP" "$backup_path" || { log 'ERROR: could not save previous version; refusing to overwrite'; return 1; }
+        chmod 755 "$backup_path"
+        log "Backup saved: $backup_path"
+      fi
+    fi
+    local temp
+    temp="$(mktemp "$INST_ROOT/.Melty.staging.XXXXXXXX")"
+    if cp -- "$PAYLOAD" "$temp" && chmod 755 "$temp" && mv -f -- "$temp" "$INST_APP"; then
+      log "Original 1.0.76 installed: $INST_APP"
+    else
+      rm -f -- "$temp"
+      log 'ERROR: unable to install 1.0.76 AppImage'
+      return 1
+    fi
+  else
+    chmod 755 "$INST_APP"
+    log 'Original 1.0.76 already installed, repairing integration'
+  fi
+  # The verified 1.0.76 registers its own real GNOME/KDE icon and melty:// scheme.
+  if ! "$INST_APP" --registrar >>"$LOG_FILE" 2>&1; then
+    log 'ERROR: 1.0.76 could not register its desktop shortcut'
+    return 1
+  fi
+  local desktop="$DATA_HOME/applications/gg.melty.app.desktop"
+  [[ -f "$desktop" ]] || { log 'ERROR: missing GNOME/KDE shortcut'; return 1; }
+  log "Desktop shortcut installed: $desktop"
+  if command -v xdg-mime >/dev/null 2>&1; then
+    log "OAuth protocol handler: $(xdg-mime query default x-scheme-handler/melty 2>/dev/null || true)"
+  fi
+}
+
+start_melty() {
+  log 'Launching the unmodified 1.0.76 AppImage'
+  exec "$INST_APP"
+}
+
+case "${1:-}" in
+  --version|--app-version)
+    printf 'Melty Linux Installer 1.0.76\n1.0.76 sha256: %s\n' "$EXPECTED_SHA"
+    exit 0 ;;
+  --verify)
+    verify_payload && printf 'OK: bundled 1.0.76 has the exact original SHA-256\n'
+    exit 0 ;;
+  --install-only|--repair)
+    install_payload
+    exit $? ;;
+  --install|--install-and-open)
+    install_payload
+    start_melty ;;
+  --set-language)
+    case "${2:-}" in
+      en|pt-BR|es|fr|de|it|ja)
+        mkdir -p "$(dirname "$LANG_FILE")"
+        printf '%s\n' "$2" > "$LANG_FILE"
+        printf 'Language: %s\n' "$2"
+        exit 0 ;;
+      *) printf 'Usage: installer --set-language {en|pt-BR|es|fr|de|it|ja}\n' >&2; exit 2 ;;
+    esac ;;
+  --help|-h)
+    echo 'Run with no args for graphical installation.'
+    echo 'Options: --verify, --install-only, --install, --set-language CODE'
+    exit 0 ;;
+  '') ;;
+  *) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
+esac
+
+verify_payload
+if [[ -f "$LANG_FILE" && -z "${MELTY_LANG:-}" ]]; then
+  read -r saved_lang < "$LANG_FILE" || true
+  case "${saved_lang:-}" in en|pt-BR|es|fr|de|it|ja) export MELTY_LANG="$saved_lang";; esac
+fi
+# If the exact 1.0.76 is already installed, just start the verified installed app.
+if [[ -f "$INST_APP" ]] && cmp -s -- "$PAYLOAD" "$INST_APP"; then
+  if [[ -f "$DATA_HOME/applications/gg.melty.app.desktop" ]]; then
+    log 'Matching 1.0.76 installation exists; launching without installer prompt'
+    start_melty
+  fi
+fi
+mode='--new'
+[[ -e "$INST_APP" ]] && mode='--update'
+if [[ -n "${DISPLAY:-}" && -x "$GUI" ]]; then
+  result=0
+  "$GUI" "$mode" || result=$?
+  case "$result" in
+    0) install_payload; start_melty;;
+    11) log 'Installation cancelled'; exit 0;;
+    4) log 'No X11 display; use --install to install without the graphical dialog'; exit 1;;
+    *) log "Installer dialog returned error $result"; exit 1;;
+  esac
+else
+  log 'No X11 display available; run this AppImage with --install to install and launch.'
+  exit 1
+fi

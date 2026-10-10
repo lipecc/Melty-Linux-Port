@@ -1,145 +1,97 @@
-# Melty Linux Port
+# Melty for Linux — community port (1.0.76 Fix 10)
 
-An **unofficial, community-built Linux compatibility port** of the [Melty](https://melty.gg/) desktop application. It integrates the original desktop experience with native Linux Steam, Proton, and GNOME/KDE desktops.
-
-> **Status:** Linux port of upstream Melty **1.0.72**. Tested in a controlled Linux environment, with PEAK/Dead Ascent reported working on a real Linux computer. Other mashups may require additional Wine/Proton work. This project is not affiliated with the Melty developers, Steam, or Valve.
+An **unofficial Linux adaptation** of the Windows desktop application available from [melty.gg](https://melty.gg). This repository provides the community-written **Linux integration code, guarded patches, build scripts, and installer source**. It does **not** contain the Melty proprietary application or its official installer.
 
 ## Features
 
-- Graphical, **no-root AppImage installer** with **Install & Open**, **Run Only**, and **Cancel** actions.
-- Creates an application-menu shortcut, installs the Melty icon, and registers `melty://` deep links for external Google sign-in.
-- Uses a stable per-user AppImage path, so future updates do not break authentication callbacks.
-- Detects games in native Steam, Flatpak Steam, and additional registered Steam libraries.
-- Tracks Steam/Proton game processes, including games launched through Proton.
-- Starts supported Steam games **through Steam**, preserving Steam launch options and Proton selection.
-- Provides a **Steam/Proton environment bridge** for mashups needing variables such as `DEADASCENT_L4D2_DIR` and DLL overrides such as `winhttp=n,b`.
-- Downloads the matching Electron Linux runtime on first use, with a native progress window, then reuses the installation.
-- Diagnostic commands for Steam libraries, running game processes, and mod loaders.
-- Localized Linux installer/downloader in **English, Brazilian Portuguese, Spanish, French, German, Italian, and Japanese**.
+- Steam library discovery for native Steam and Steam Flatpak installations, including secondary libraries.
+- Steam AppID launching instead of starting Windows games outside Steam/Proton.
+- Read-only Linux `/proc` game detection, with status refreshes.
+- One-time Proton launch-option helper for mashups needing environment variables and `winhttp.dll`/`version.dll` overrides; does not overwrite Steam settings.
+- `melty://` Google sign-in callback, GNOME/KDE desktop shortcut, and window/icon integration.
+- Graphical runtime download and multilingual installer (English, Brazilian Portuguese, Spanish, French, German, Italian, Japanese).
+- A Next.js-aware page-loading guard for the Linux Electron runtime, with bounded hydration retries and clear diagnostic messages in `~/.config/Melty/updater.log`.
 
-The web interface loaded from melty.gg is **not bundled or translated by this project**. The port forwards its language preference to Electron, but available in-app translations depend on the Melty website itself.
+## Requirements
 
-## Download and install
+- Linux x86_64 and a supported graphical desktop (GNOME or KDE; X11/XWayland for the installer).
+- `bash`, `curl` or `wget`, `unzip`, `xdg-mime` (or `gio`), and a working network connection for the initial Electron download.
+- Steam installed for Steam-based mashups. Windows games should launch through Steam + Proton.
+- Electron 39.8.10 is downloaded **on first launch**, unless already installed under `~/.local/share/Melty/Programs/Electron/39.8.10/`.
 
-1. Download `Melty-Linux-1.0.72-x86_64.AppImage` from this repository's **Releases** page.
-2. Allow the downloaded file to execute (through your file manager, or using `chmod +x`).
-3. Open it. The graphical installer will appear. Pick your language and **Install & Open**.
-4. The installer copies itself to `~/.local/share/Melty/Melty.AppImage`, creates an app-menu entry, installs the icon, and registers `melty://` automatically. **No `sudo` required.**
-5. At first launch, let the app download the official Electron 39.8.10 Linux runtime (~110 MB). Later launches reuse this runtime.
+## Download / installation
 
-Terminal example:
+Download **`Melty-Linux-1.0.76-Fix9-WebGuard-Installer-x86_64.AppImage`** from the project's GitHub Releases, then:
 
 ```bash
-chmod +x ./Melty-Linux-1.0.72-x86_64.AppImage
-./Melty-Linux-1.0.72-x86_64.AppImage
+chmod +x Melty-Linux-1.0.76-Fix9-WebGuard-Installer-x86_64.AppImage
+./Melty-Linux-1.0.76-Fix9-WebGuard-Installer-x86_64.AppImage
 ```
 
-The GUI uses X11/XWayland. On a Wayland-only or headless session without XWayland, the launcher falls back to per-user installation in the terminal.
+Click **Install & Open**. This installs the underlying AppImage in `~/.local/share/Melty/Melty.AppImage`, sets executable permissions, adds a GNOME/KDE menu entry and icon, and registers the `melty://` protocol without root. It saves the previous application binary under `~/.local/share/Melty/Backups/`. Updates are blocked while the Melty Electron runtime is open.
 
-### Language selection
-
-The installer initially uses your Linux system language (English fallback). Use the arrows at the top of the installer to switch languages. It remembers your choice in `~/.config/Melty/language` (or `$XDG_CONFIG_HOME/Melty/language`).
-
-You may also select the language manually:
+For headless or scripted installs:
 
 ```bash
-./Melty-Linux-1.0.72-x86_64.AppImage --set-language es
+./Melty-Linux-1.0.76-Fix9-WebGuard-Installer-x86_64.AppImage --verify
+./Melty-Linux-1.0.76-Fix9-WebGuard-Installer-x86_64.AppImage --install-only
 ```
 
-Accepted codes: `en`, `pt-BR`, `es`, `fr`, `de`, `it`, `ja`. An explicit `MELTY_LANG` environment variable overrides the saved language. Text rendering for Japanese requires a suitable font installed on the desktop.
+Or run `Melty-Linux-1.0.76-Fix9-WebGuard-x86_64.AppImage` directly to launch/register the desktop integration.
 
-### Managing the installation
+## Build locally
+
+Obtain the **unmodified official** `Melty-Setup-1.0.76.exe` yourself. Do not place it in the Git repository.
+
+Build dependencies: Python 3, Node.js, C compiler, `patch`, `pkg-config`, `libarchive` development headers, X11 development headers, and `7z`, `7zz` or `7za`. On Arch-based systems the relevant packages are typically `base-devel`, `python`, `nodejs`, `p7zip`/`7zip`, `libarchive`, and `libx11`.
 
 ```bash
-# Install the desktop integration without opening the UI
-./Melty-Linux-1.0.72-x86_64.AppImage --install
-
-# Inspect registered paths and runtime state
-./Melty-Linux-1.0.72-x86_64.AppImage --diagnostic
-
-# Read-only Steam/game diagnostics
-./Melty-Linux-1.0.72-x86_64.AppImage --steam-diagnostic
-./Melty-Linux-1.0.72-x86_64.AppImage --process-diagnostic
-./Melty-Linux-1.0.72-x86_64.AppImage --mod-diagnostic
-
-# Remove the shortcut, installed AppImage, and icon; retain game/user data
-./Melty-Linux-1.0.72-x86_64.AppImage --uninstall
+./tools/build.sh /path/to/Melty-Setup-1.0.76.exe ./dist
 ```
 
-Installed files are located in:
+This builds **both** the direct-run AppImage and the GUI installer AppImage. The build is pinned to the upstream v1.0.76 main bundle's SHA-256 and fails closed if upstream changes it. Any subsequent Melty release requires reviewing and updating the patches; do not blindly reapply them to a newer executable.
 
-```text
-~/.local/share/Melty/
-├── Melty.AppImage
-├── bin/melty-linux
-├── Downloads/
-└── Programs/
-    ├── Electron/39.8.10/
-    └── Tools/
-~/.local/share/applications/gg.melty.app.desktop
-~/.local/share/icons/hicolor/512x512/apps/gg.melty.app.png
-~/.config/Melty/language
-~/.local/state/melty-linux-port/launcher.log
-```
-
-## Steam/Proton mashups
-
-Most ordinary Steam games should be launched using Steam, **not by directly executing their Windows `.exe`**. Games that need mod-specific environment variables are handled through a launch-option wrapper generated under `~/.local/share/Melty/Programs/Tools/`.
-
-For example, a PEAK / Dead Ascent mashup may require a `DEADASCENT_L4D2_DIR` path and a Wine override for `winhttp.dll`. When required, Melty prompts you to add an option to the game's **Steam > Properties > General > Launch Options**. Review and preserve any options you already use; the launcher does **not** silently edit Steam's configuration. Only files belonging to the mod and the explicitly configured games should be modified by the normal Melty flow.
-
-**Security:** Mods, third-party game loaders, and injected DLLs are executable code. Install mods only from developers and sources you trust. This project does not bypass DRM, Steam authentication, or anticheat systems.
-
-## Building from source
-
-The repository contains the **original Linux compatibility code**, small upstream patch files, a native AppImage bootstrap, and build/test scripts. It intentionally does **not** include proprietary upstream Melty code, game files, or an Electron binary.
-
-You must provide your own legitimate copy of the official **Melty 1.0.72 Windows installer** (`Melty-Setup-1.0.72.exe`). The build requires Linux x86_64, Python 3, a C compiler, `patch`, `pkg-config`, `libarchive` development files, X11 development files, and `7z`/`7za`. For example on Arch Linux / EndeavourOS:
-
-```bash
-sudo pacman -S --needed base-devel python p7zip libarchive libx11 pkgconf patch
-```
-
-Clone this repository and run:
-
-```bash
-./tools/build.sh ~/Downloads/Melty-Setup-1.0.72.exe
-# Generated artifact: dist/Melty-Linux-1.0.72-x86_64.AppImage
-```
-
-The build verifies the SHA-256 of the exact upstream Electron bundle. If upstream changes the installer, the build stops rather than silently applying a patch to a different version.
-
-Optional tests (Node.js 20+):
+Run local bridge/i18n tests with:
 
 ```bash
 ./tests/run.sh
 ```
 
-### Repository layout
+## Paths and diagnostics
 
-| Path | Purpose |
+| Purpose | Default path |
 | --- | --- |
-| `src/` | Native installer/downloader, process and Steam/Proton integration, and runtime |
-| `src/i18n.h` | Installer and downloader translations |
-| `linux/AppRun` | AppImage entry point, installation, Electron bootstrap, diagnostics |
-| `patches/` | Minimal patches applied to the official upstream Electron archive |
-| `tools/` | Extraction, patching, repacking, and AppImage build utilities |
-| `tests/` | Linux Steam/Proton bridge tests |
+| Installed AppImage | `~/.local/share/Melty/Melty.AppImage` |
+| Electron runtime | `~/.local/share/Melty/Programs/Electron/39.8.10/` |
+| Mod/Proton helper | `~/.local/share/Melty/Programs/Tools/` |
+| Previous binaries | `~/.local/share/Melty/Backups/` |
+| Desktop shortcut | `~/.local/share/applications/gg.melty.app.desktop` |
+| Launcher logs | `~/.local/state/melty-linux-port/launcher.log` |
+| Installer logs | `~/.local/state/melty-linux-port/installer.log` |
 
-## Releasing on GitHub
+Diagnostic commands:
 
-Source code belongs in the main repository; prebuilt AppImages belong under **GitHub Releases**. Suggested tag: `v1.0.72-linux.1`. Add the generated `.AppImage` as a release asset, not a committed binary. Do **not** add the original Windows installer or unmodified upstream ASAR files to git.
+```bash
+~/.local/share/Melty/Melty.AppImage --diagnostico
+~/.local/share/Melty/Melty.AppImage --diagnostico-steam
+~/.local/share/Melty/Melty.AppImage --diagnostico-processos
+~/.local/share/Melty/Melty.AppImage --diagnostico-mods
+```
 
-Before distributing a binary containing Melty's original proprietary components, verify that upstream's license and/or their express permission allows redistribution. The MIT license in this repository covers **only the independently written Linux port code**, not Melty, Valve/Steam, third-party games, or their assets.
+To troubleshoot rendering, you can temporarily use `MELTY_DISABLE_GPU=1` when launching the direct AppImage. This option is not a fix for all GPU drivers.
 
-## Troubleshooting
+## Compatibility and known limits
 
-If the window fails to load, consult `~/.local/state/melty-linux-port/launcher.log`. If game detection fails, use `--steam-diagnostic` and `--process-diagnostic`. If a mashup fails, inspect `--mod-diagnostic` and the relevant game's Proton log. Include minimal, redacted output in an issue; **never post authentication cookies, OAuth callback tokens, or personal paths you wish to keep private**.
+The desktop shell, native Steam discovery, Proton bridge, and package installation have automated or simulated tests. **Not every game mashup is verified with Melty 1.0.76**, and some Windows-specific helper executables cannot run natively on Linux. A Proton DLL hook alone does not guarantee that two different games can communicate successfully. Melty's hosted web UI and Google service remain controlled by the upstream project.
 
-## Contributions
+The port does **not** automatically apply upstream Windows application updates. New official releases require a reviewed Linux rebuild. Never install the official Windows executable into the Linux installation directory.
 
-Pull requests for translations, new Steam library layouts, distro compatibility, and Proton-specific bug fixes are welcome. Please test changes without overwriting user Steam launch options or game files and ensure regression coverage for the Steam/Proton bridge.
+## Attribution and licensing
 
-## License
+The Linux integration code in this repository is MIT licensed; see [`LICENSE`](LICENSE). Melty and its original application assets remain the property of their respective owners. This repository is not affiliated with or endorsed by Melty. **If you publish binaries built from the original Windows installer, ensure you have the right to redistribute the original Melty components**; the port's MIT license does not grant permission for upstream code or assets. See [`NOTICE.md`](NOTICE.md).
 
-New code for the Linux port is licensed under MIT; see [`LICENSE`](LICENSE) and [`NOTICE.md`](NOTICE.md) for scope and third-party licensing notes.
+## Web rendering diagnostics (Fix 10)
+
+If the web page shows **Melty could not load** even when the navigation and document checks pass, this build adds read-only diagnostics to the existing launcher log at `~/.local/state/melty-linux-port/launcher.log`. Look for `[melty-linux-webdiag]`.
+
+These diagnostics record renderer warnings/errors (with common credentials redacted) and the presence of the site's root and `window.meltyDesktop` API. No browser cache or login data is cleared. This release **does not claim to fix upstream server-side errors**: it is intended to identify the exact failure before modifying Steam/Proton integrations.

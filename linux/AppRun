@@ -157,7 +157,7 @@ case "${1:-}" in
         printf 'Melty launcher removed; downloads and game data have been preserved.\n'
         exit 0 ;;
     --diagnostico|--diagnostic)
-        printf 'Melty Linux Port 1.0.72 rev.7\nElectron: %s\nPrograms: %s\nDownloads: %s\nLogs: %s\nInstalled AppImage: %s\nDesktop file: %s\nGNOME icon: %s\nRuntime installed: ' "$ELECTRON_DIR" "$PROGRAM_DIR" "$DOWNLOADS_DIR" "$LOG_FILE" "$INSTALL_APP" "$APP_DESKTOP" "$ICON_DEST"
+        printf 'Melty Linux Port 1.0.76 Linux.1\nElectron: %s\nPrograms: %s\nDownloads: %s\nLogs: %s\nInstalled AppImage: %s\nDesktop file: %s\nGNOME icon: %s\nRuntime installed: ' "$ELECTRON_DIR" "$PROGRAM_DIR" "$DOWNLOADS_DIR" "$LOG_FILE" "$INSTALL_APP" "$APP_DESKTOP" "$ICON_DEST"
         if [[ -x "$ELECTRON_DIR/electron" ]]; then echo yes; else echo no; fi
         if command -v xdg-mime >/dev/null 2>&1; then
             echo "Handler melty://: $(xdg-mime query default x-scheme-handler/melty 2>/dev/null || true)"

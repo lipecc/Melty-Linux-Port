@@ -1,0 +1,432 @@
+--- a/dist/main.bundle.mjs
++++ b/dist/main.bundle.mjs
+@@ -1,5 +1,9 @@
+ 
+ import { createRequire as __melty_createRequire } from 'node:module';
++import { readLinuxGameProcesses as meltyLinuxProcessRows, applyLinuxRunningInventory as meltyApplyRunning } from './linux-processes.mjs';
++import { steamIdFromLink as meltySteamId, matchSteamMainExecutable as meltySteamMain, launchSteamApp as meltyLaunchSteam } from './linux-steam-bridge.mjs';
++import { prepareSteamProtonBridge, acceptSteamProtonBridge } from './linux-proton-bridge.mjs';
++import { clipboard as meltyClipboard } from 'electron';
+ import { fileURLToPath as __melty_fileURLToPath } from 'node:url';
+ import { dirname as __melty_dirname, join as __melty_join } from 'node:path';
+ import { mkdirSync as __melty_mkdir, appendFileSync as __melty_append } from 'node:fs';
+@@ -34979,7 +34983,7 @@
+ import { app as app2 } from "electron";
+ var PRODUCTION_URL = "https://melty.gg";
+ function loadConfig() {
+-  const isDev = !app2.isPackaged || process.env.MELTY_DEV_DESKTOP === "1";
++  const isDev = process.env.MELTY_DEV_DESKTOP === "1";
+   const apiBaseUrl = process.env.MELTY_API_URL?.trim() || (isDev ? "http://localhost:3000" : PRODUCTION_URL);
+   return {
+     apiBaseUrl,
+@@ -35603,6 +35607,7 @@
+   }));
+ }
+ async function legacyProcesses() {
++  if (process.platform === "linux") return meltyLinuxProcessRows();
+   if (process.platform !== "win32")
+     return [];
+   const script = "$rows = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,ExecutablePath,CreationDate | ForEach-Object { [pscustomobject]@{ ProcessId = [int]$_.ProcessId; ParentProcessId = [int]$_.ParentProcessId; Name = [string]$_.Name; ExecutablePath = $_.ExecutablePath; CreationDate = $(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fff') + 'Z' } else { $null }) } }); ConvertTo-Json -InputObject $rows -Compress -Depth 2";
+@@ -35950,6 +35955,7 @@
+     return pending;
+   };
+   function nativeProcesses2(fresh = false) {
++    if (process.platform === "linux") return meltyLinuxProcessRows();
+     if (!inspector.state.ready) {
+       inspector.start();
+       return fromLegacy(fresh);
+@@ -36494,6 +36500,20 @@
+     roots.push(posix.join(options.homeDirectory ?? homedir(), "Library", "Application Support", "Steam"));
+     return uniquePosixPaths(roots);
+   }
++  if (platform2 === "linux") {
++    const home = options.homeDirectory ?? homedir();
++    const dataHome = env.XDG_DATA_HOME || posix.join(home, ".local", "share");
++    roots.push(
++      posix.join(dataHome, "Steam"),
++      posix.join(home, ".steam", "steam"),
++      posix.join(home, ".steam", "root"),
++      posix.join(home, ".steam", "debian-installation"),
++      posix.join(home, "snap", "steam", "common", ".local", "share", "Steam"),
++      posix.join(home, ".var", "app", "com.valvesoftware.Steam", "data", "Steam"),
++      posix.join(home, ".var", "app", "com.valvesoftware.Steam", ".local", "share", "Steam")
++    );
++    return uniquePosixPaths(roots);
++  }
+   if (platform2 === "win32") {
+     let registryFailure;
+     try {
+@@ -37577,6 +37597,7 @@
+   };
+ }
+ async function snapshotInstalledGameProcessState(options = {}) {
++  if (process.platform === "linux") return installedGameProcessStateFromProcesses(await meltyLinuxProcessRows());
+   if (process.platform !== "win32") {
+     return installedGameProcessStateFromProcesses([]);
+   }
+@@ -37584,6 +37605,7 @@
+   return installedGameProcessStateFromProcesses(processes);
+ }
+ async function snapshotRunningProcesses() {
++  if (process.platform === "linux") return runningProcessSnapshotFromProcesses(await meltyLinuxProcessRows());
+   if (process.platform !== "win32")
+     return runningProcessSnapshotFromProcesses([]);
+   const processes = await nativeProcesses();
+@@ -40462,7 +40484,7 @@
+   return targets[0] ?? steamLaunchTargetFromRequest(request);
+ }
+ async function resolveInstalledGameLaunchTarget(request) {
+-  if (process.platform === "darwin") {
++  if (process.platform === "darwin" || process.platform === "linux") {
+     return resolveInstalledGameLaunchTargetFromEvidence(request, await scanSteamManifests());
+   }
+   if (process.platform !== "win32")
+@@ -40646,15 +40668,15 @@
+   const startedAt = Date.now();
+   const includeRunning = options.includeRunning !== false;
+   const platform2 = options.platform ?? process.platform;
+-  if (platform2 === "darwin") {
++  if (platform2 === "darwin" || platform2 === "linux") {
+     const steam = await measureInstalledGameInventoryStage("steam", () => scanSteamManifests({ steamRoots: options.steamRoots }), (items2) => items2.length);
+     const inventory3 = buildInstalledGameInventory(steam.value ?? [], {
+       includeLocalIconSourcePath: options.includeLocalIconSourcePath
+-    }).map((game) => ({
+-      ...game,
+-      // macOS lists Steam games for launching only; running-process detection is Windows-only.
+-      running: false
+-    }));
++    }).map((game) => ({ ...game, running: false }));
++    if (platform2 === "linux" && includeRunning) {
++      try { meltyApplyRunning(inventory3, await meltyLinuxProcessRows()); }
++      catch (error) { console.warn('[melty-linux] inventory process check:', error?.message ?? error); }
++    }
+     const skipped = (stage) => skippedInstalledGameInventoryStage(stage);
+     deliverInstalledGameInventoryDiagnostics(options.onDiagnostics, {
+       version: 1,
+@@ -40799,8 +40821,13 @@
+ import { shell as shell2 } from "electron";
+ var cachedSteamExe = null;
+ async function resolveSteamExe() {
+-  if (cachedSteamExe)
+-    return cachedSteamExe;
++  if (cachedSteamExe) return cachedSteamExe;
++  if (process.platform === "linux") {
++    for (const candidate of [process.env.MELTY_STEAM_EXECUTABLE, "/usr/bin/steam", "/usr/games/steam", "/usr/local/bin/steam", "/var/lib/flatpak/exports/bin/com.valvesoftware.Steam", join8(process.env.HOME ?? "", ".local", "share", "flatpak", "exports", "bin", "com.valvesoftware.Steam")]) {
++      if (candidate && existsSync3(candidate)) return cachedSteamExe = candidate;
++    }
++    return null;
++  }
+   const out = await new Promise((resolve13) => {
+     execFile6("reg", ["query", "HKCU\\Software\\Valve\\Steam", "/v", "SteamExe"], { windowsHide: true }, (error3, stdout) => resolve13(error3 ? "" : stdout));
+   });
+@@ -40867,7 +40894,12 @@
+ }
+ async function openGame(target, extraArgs = []) {
+   if (target.kind === "uri") {
+-    const steamAppId = extraArgs.length ? steamAppIdFromUri(target.uri) : null;
++    const steamAppId = process.platform === "linux" ? meltySteamId(target.uri) : extraArgs.length ? steamAppIdFromUri(target.uri) : null;
++    if (process.platform === "linux" && steamAppId) {
++      const result = await meltyLaunchSteam(steamAppId, extraArgs, { openExternal: (url) => shell2.openExternal(url) });
++      console.log(`[linux-steam] via ${result.method}: AppID=${steamAppId}`);
++      return;
++    }
+     const steamExe = steamAppId ? await resolveSteamExe() : null;
+     if (steamAppId && steamExe) {
+       const started = await spawnDetachedChecked(steamExe, ["-applaunch", steamAppId, ...extraArgs]).catch(() => false);
+@@ -40892,7 +40924,7 @@
+   } catch (error3) {
+     const code = spawnErrorCode(error3);
+     if (code !== "EACCES" && code !== "EPERM" && code !== "UNKNOWN") {
+-      throw new Error(`Windows refused to start ${basename3(target.executablePath)} (${describeSpawnError(error3)}).`);
++      throw new Error(`${process.platform === "win32" ? "Windows" : "Linux"} could not launch ${basename3(target.executablePath)} (${describeSpawnError(error3)}). Use Steam/Proton for Windows games.`);
+     }
+     await launchViaWindowsShell(target.executablePath, args, target.cwd);
+   }
+@@ -55685,6 +55717,30 @@
+   if (live && Date.now() - liveAt <= RESCAN_AFTER_MS)
+     return live;
+   return scan("mods");
++}
++// Refresh running badges even while Steam library UI is idle.
++if (process.platform === "linux") {
++  let linuxPresenceBusy = false;
++  const linuxPresenceTimer = setInterval(async () => {
++    if (linuxPresenceBusy || scanning || !live || detectionState !== "ready") return;
++    linuxPresenceBusy = true;
++    try {
++      const rows = await meltyLinuxProcessRows();
++      if (scanning || !live) return;
++      const updated = live.map((item) => ({ ...item }));
++      meltyApplyRunning(updated, rows);
++      if (updated.some((game,i) => game.running !== live[i].running)) {
++        for (const [i,game] of updated.entries()) if (game.running !== live[i].running)
++          console.log(`[linux-games] ${game.displayName}: ${game.running ? "aberto" : "fechado"}`);
++        live = updated;
++        revision++;
++        cached = updated.map(forPage);
++        notifyInventory();
++      }
++    } catch (error) { console.warn('[melty-linux] presence refresh:', error?.message ?? error); }
++    finally { linuxPresenceBusy = false; }
++  }, 3000);
++  linuxPresenceTimer.unref();
+ }
+ function rescanSoon(reason) {
+   if (Date.now() - liveAt <= RESCAN_AFTER_MS)
+@@ -74296,6 +74352,13 @@
+     app27.once("will-quit", unsubscribeGames);
+     const store = new ModStore(join43(rootEnv.modsDir, "state.json"));
+     const journal = new ModJournal({ modsDir: rootEnv.modsDir, store });
++    const linuxSteamMain = async (file) => {
++      if (process.platform !== "linux" || !/\.exe$/i.test(file)) return null;
++      const evidence = await scanSteamManifests().catch((error) => {
++        console.warn('[linux-steam] manifest scan failed', error?.message ?? error); return [];
++      });
++      return meltySteamMain(file, evidence, GAME_ALIASES);
++    };
+     const launchHost = {
+       async launchGame(game, args) {
+         if (game.inventory && game.source === "inventory") {
+@@ -74309,6 +74372,14 @@
+               deps3.log?.(`[mods] dev fake game: would start ${path}`);
+               return;
+             }
++            const steamMain = await linuxSteamMain(path);
++            if (steamMain) {
++              console.log(`[linux-steam] mod launch ${steamMain.game} via AppID=${steamMain.appId}`);
++              await openGame({kind:"uri",uri:`steam://rungameid/${steamMain.appId}`},args);
++              return;
++            }
++            if (process.platform === "linux" && /\.(exe|bat|cmd)$/i.test(path))
++              throw new ModInstallError(`The Windows loader ${basename15(path)} requires Steam/Proton.`,"launch-unsupported");
+             await spawnDetachedWithPid(path, args, game.installDir);
+             return;
+           }
+@@ -74320,9 +74391,35 @@
+           deps3.log?.(`[mods] dev fake game: would start ${executable3} ${args.join(" ")}`.trim());
+           return void 0;
+         }
++        if (process.platform === "linux" && /\.(exe|bat|cmd)$/i.test(executable3)) {
++          const steamMain = await linuxSteamMain(executable3);
++          if (steamMain) {
++            const extraEnv = Object.fromEntries(Object.entries(options?.env ?? {}).filter(([key]) => !["SteamAppId","SteamGameId"].includes(key)));
++            const hasHook = (await Promise.all(["winhttp.dll","version.dll"].map((dll) => stat24(join43(dirname14(executable3),dll)).then((st)=>st.isFile()).catch(()=>false)))).some(Boolean);
++            const bridge = Object.keys(extraEnv).length || hasHook ? await prepareSteamProtonBridge({appId:steamMain.appId,vars:extraEnv,gameDir:dirname14(executable3)}) : null;
++            if (bridge && !bridge.confirmed) {
++              const window2=BrowserWindow4.getFocusedWindow() ?? BrowserWindow4.getAllWindows()[0];
++              const details=`This mashup needs Steam launch options to pass ${bridge.keys.join(', ') || 'Proton settings'} to the game.\n\nSteam > Library > ${steamMain.game} > Properties > General > Launch Options.\n\nPaste:\n${bridge.launchOptions}\n\nKeep any existing custom options. Return to Melty and retry.`;
++              const choices={type:"info",title:"Steam / Proton Setup",message:"One-time setup needed",detail:details,buttons:["Copy launch options", "Already configured — Launch", "Cancel"],defaultId:0,cancelId:2,noLink:true};
++              const answer=window2 ? await dialog2.showMessageBox(window2,choices) : await dialog2.showMessageBox(choices);
++              if (answer.response===0) {
++                meltyClipboard.writeText(bridge.launchOptions);
++                await shell3.openExternal("steam://open/games").catch(()=>{});
++                throw new ModInstallError("Steam launch options copied. Paste into the game's properties, then retry in Melty.","proton-setup-needed");
++              }
++              if (answer.response!==1) throw new ModInstallError("Proton setup cancelled.","proton-setup-needed");
++              await acceptSteamProtonBridge(bridge);
++            }
++            console.log(bridge ? `[linux-proton] AppID=${steamMain.appId}: ${bridge.keys.join(', ')}` : `[linux-steam] AppID=${steamMain.appId}: standard launch`);
++            await openGame({kind:"uri",uri:`steam://rungameid/${steamMain.appId}`},args);
++            return;
++          }
++          throw new ModInstallError(`Windows loader ${basename15(executable3)} needs Steam/Proton support; direct Linux launch is blocked.`,"launch-unsupported");
++        }
+         return spawnDetachedWithPid(executable3, args, cwd, options?.hidden === true, options?.env);
+       },
+       async openUri(uri) {
++        if (process.platform === "linux" && meltySteamId(uri)) return openGame({kind:"uri",uri});
+         await shell3.openExternal(uri);
+       },
+       async openHtml(entryPath, title, context2) {
+@@ -74367,7 +74464,7 @@
+       runningMinecraftCopies: nativeMinecraftRunning,
+       firstStart: {
+         steamAppId: (game, steamAppIds) => readSteamAppId(game.installDir, steamAppIds),
+-        neverStarted: (game, steamAppIds) => readSteamNeverStarted(game.installDir, steamAppIds),
++        neverStarted: (game, steamAppIds) => process.platform === "linux" ? Promise.resolve(false) : readSteamNeverStarted(game.installDir, steamAppIds),
+         programsIn,
+         running: async (names) => {
+           const snapshot2 = await snapshotRunningProcesses();
+@@ -78393,15 +78490,25 @@
+ }
+ 
+ // dist-tsc/apps/capture/src/main/window-guard.js
+-var LOAD_TIMEOUT_MS = 3e4;
+-var SETTLE_MS = 4e3;
++var LOAD_TIMEOUT_MS = 45e3;
++var SETTLE_MS = 12e3;
+ var CRASH_WINDOW_MS = 2 * 6e4;
+ var CRASHES_TO_STOP = 3;
+ function pageVerdict(page) {
+   if (page.htmlId === "__next_error__")
+     return { ok: false, reason: "next-error-page" };
+   const melty = page.stamped === true || page.shell === true || /\bmelty\b/i.test(page.title);
+-  return melty ? { ok: true } : { ok: false, reason: "not-melty-page" };
++  if (melty) return { ok: true };
++  // The production site's Next.js shell can arrive before its title and
++  // client-rendered branding. Accept the app document only on the already-
++  // checked melty.gg origin, without accepting off-origin navigations.
++  if (process.platform === "linux") {
++    if (page.nextAssets === true && page.appRoot === true)
++      return { ok: true, reason: "nextjs-shell" };
++    if (page.text && page.text.trim().length >= 24)
++      return { ok: true, reason: "visible-site-with-updated-markup" };
++  }
++  return { ok: false, reason: "not-melty-page" };
+ }
+ var SNAPSHOT_SCRIPT = `(() => ({
+   htmlId: document.documentElement.id || "",
+@@ -78410,6 +78517,9 @@
+   text: (document.body ? document.body.innerText : "").replace(/\\s+/g, " ").trim().slice(0, 160),
+   stamped: document.documentElement.hasAttribute("data-dpl-id"),
+   shell: Boolean(document.querySelector(".app-shell-layout, .app-shell-content")),
++  readyState: document.readyState,
++  appRoot: Boolean(document.querySelector("#__next, main, [data-nextjs-router]")),
++  nextAssets: Boolean(document.querySelector('script[src*="/_next/"], link[href*="/_next/"]')),
+ }))()`;
+ var CrashCounter = class {
+   times = [];
+@@ -79000,6 +79110,7 @@
+ var TITLEBAR = { color: "rgba(20, 20, 20, 0)", symbolColor: "#f4f5f2", height: 52 };
+ app30.setPath("userData", app30.commandLine.getSwitchValue("user-data-dir") || join51(app30.getPath("appData"), config.isDev ? "Melty Dev" : "Melty"));
+ app30.setName(TITLE);
++if (process.platform === "linux") app30.setDesktopName("gg.melty.app.desktop");
+ process.title = TITLE;
+ if (process.platform === "win32")
+   app30.setAppUserModelId(config.isDev ? "gg.melty.desktop.dev" : "gg.melty.desktop");
+@@ -79133,7 +79244,7 @@
+     autoHideMenuBar: true,
+     show,
+     paintWhenInitiallyHidden: false,
+-    titleBarStyle: "hidden",
++    titleBarStyle: windows ? "hidden" : "default",
+     ...windows ? { titleBarOverlay: TITLEBAR } : {},
+     webPreferences: {
+       contextIsolation: true,
+@@ -79144,6 +79255,54 @@
+     }
+   });
+   mainWindow = window2;
++  // Linux diagnostics: do not change the website or Electron's request handling.
++  // Observe console errors and check that the desktop bridge reaches Next.js.
++  if (process.platform === "linux") {
++    const scrub10 = (raw) => String(raw ?? "")
++      .replace(/Bearer\s+[^\s\"']+/gi, "Bearer [redacted]")
++      .replace(/([?&](?:token|code|key|auth|state|session|secret|password)=)[^&\s]+/gi, "$1[redacted]")
++      .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]")
++      .slice(0, 440);
++    let webErrorCount10 = 0;
++    window2.webContents.on("console-message", (_event, details, message2, lineNumber2, sourceId2) => {
++      try {
++        // Electron 39 uses an object, while older runtimes passed positional data.
++        const item = typeof details === "object" && details !== null
++          ? details : { level: details, message: message2, lineNumber: lineNumber2, sourceId: sourceId2 };
++        const level = String(item.level ?? "").toLowerCase();
++        const msg = String(item.message ?? "");
++        if (!(/error|warn|fatal/.test(level) || /^[23]$/.test(level) ||
++              /uncaught|unhandled|chunkloaderror|hydration|failed to fetch|500|403|404|net::err_/i.test(msg)))
++          return;
++        if (webErrorCount10++ >= 55) return;
++        // Only log the resource filename, never the query parameters or auth URLs.
++        let resource = "";
++        try { const src = new URL(item.sourceId || "");
++          resource = `${src.hostname}${src.pathname.slice(0, 130)}`; } catch {}
++        console.error(`[melty-linux-webdiag] ${scrub10(level)} ${scrub10(msg)} ${scrub10(resource)}:${Number(item.lineNumber || 0)}`);
++      } catch (error3) { console.error("[melty-linux-webdiag] diagnostic listener failed:", String(error3)); }
++    });
++    const inspect10 = (delay) => setTimeout(() => {
++      if (isStopping() || window2.isDestroyed() ||
++          !sameOrigin2(window2.webContents.getURL(), config.webBaseUrl)) return;
++      const script = `(() => { const a = window.meltyDesktop;
++        const text = (document.body?.innerText || "").trim().slice(0, 220);
++        return { ready: document.readyState, title: document.title.slice(0, 90),
++          root: !!document.querySelector("main, #__next, [data-nextjs-router]"),
++          nextError: document.documentElement.id === "__next_error__",
++          visibleError: /melty could not load|something went wrong|application error|internal server error/i.test(text),
++          bridge: !!a, platform: a?.platform ?? null,
++          version: a?.appVersion ?? null,
++          games: typeof a?.listInstalledGames, mods: typeof a?.mods?.getState }; })()`;
++      window2.webContents.executeJavaScript(script, true)
++        .then((value) => console.error(`[melty-linux-webdiag] snapshot ${delay}ms ${JSON.stringify(value)}`))
++        .catch((error3) => console.error(`[melty-linux-webdiag] snapshot failed: ${scrub10(error3)}`));
++    }, delay);
++    window2.webContents.on("did-finish-load", () => { inspect10(1800); inspect10(8500); inspect10(21000); });
++    window2.webContents.on("preload-error", (_event, file, error3) => {
++      console.error(`[melty-linux-webdiag] preload-error: ${scrub10(file)} ${scrub10(error3)}`);
++    });
++  }
+   window2.setMenuBarVisibility(false);
+   window2.on("page-title-updated", (event) => {
+     event.preventDefault();
+@@ -79223,25 +79382,45 @@
+   });
+   const crashes = new CrashCounter();
+   window2.webContents.on("did-finish-load", () => {
++    if (process.platform === "linux") console.log(`[melty-linux-web] loaded: ${window2.webContents.getURL()}`);
+     clearTimers();
+     if (!sameOrigin2(window2.webContents.getURL(), config.webBaseUrl))
+       return;
+-    settleTimer = setTimeout(() => {
++    // Do not replace a valid, still-hydrating page with the offline screen.
++    // Diagnose missing document markers before showing a genuine failure.
++    let attempts = 0;
++    const checkPage = () => {
+       settleTimer = null;
+       if (isStopping() || window2.isDestroyed() || !sameOrigin2(window2.webContents.getURL(), config.webBaseUrl))
+         return;
+       const read3 = window2.webContents.executeJavaScript(SNAPSHOT_SCRIPT, true);
+       void Promise.race([read3, new Promise((resolve13) => setTimeout(() => resolve13(null), 5e3))]).catch(() => null).then((page) => {
+-        if (!page || isStopping() || window2.isDestroyed())
++        if (isStopping() || window2.isDestroyed() || !sameOrigin2(window2.webContents.getURL(), config.webBaseUrl))
+           return;
+-        const verdict = pageVerdict(page);
++        const verdict = page ? pageVerdict(page) : { ok: false, reason: "snapshot-timeout" };
+         if (verdict.ok) {
++          if (process.platform === "linux") log5("event", "web-guard-ok", verdict.reason ?? "melty-markers");
+           crashes.reset();
+           return;
+         }
+-        blankWindow(window2, `${verdict.reason}: the page isn't Melty's`, { title: page.title, background: page.background, htmlId: page.htmlId, text: page.text, .../\bzscaler\b/i.test(`${page.title} ${page.text}`) && /blocked|policy|denied|restricted/i.test(`${page.title} ${page.text}`) ? { externalPolicyProvider: "zscaler" } : {} });
++        const summary = JSON.stringify({ reason: verdict.reason, attempt: attempts + 1,
++          title: page?.title ?? "", htmlId: page?.htmlId ?? "", readyState: page?.readyState ?? "unknown",
++          bodyLength: page?.text?.length ?? 0, stamped: page?.stamped ?? false,
++          shell: page?.shell ?? false, appRoot: page?.appRoot ?? false, nextAssets: page?.nextAssets ?? false });
++        if (process.platform === "linux") log5("event", "web-guard-check", summary);
++        // Recheck after hydration. The Next.js hard-error page is not transient.
++        if (process.platform === "linux" && verdict.reason !== "next-error-page" && attempts++ < 6) {
++          settleTimer = setTimeout(checkPage, 5e3);
++          settleTimer.unref?.();
++          return;
++        }
++        blankWindow(window2, `${verdict.reason}: the page isn't Melty's`, { title: page?.title,
++          background: page?.background, htmlId: page?.htmlId, text: page?.text,
++          .../\bzscaler\b/i.test(`${page?.title ?? ""} ${page?.text ?? ""}`) && /blocked|policy|denied|restricted/i.test(`${page?.title ?? ""} ${page?.text ?? ""}`)
++            ? { externalPolicyProvider: "zscaler" } : {} });
+       });
+-    }, SETTLE_MS);
++    };
++    settleTimer = setTimeout(checkPage, SETTLE_MS);
+   });
+   window2.webContents.on("preload-error", (_event, _path, error3) => {
+     reportProblem({ what: "preload failed to load", error: error3, level: "fatal", tags: { "melty.where": "preload" } });
+@@ -79476,6 +79655,11 @@
+     sendToPage("mods:state", state);
+   },
+   resolveSteamRoot: async () => {
++    if (process.platform === "linux") {
++      const roots = await discoverDefaultSteamRoots();
++      for (const root of roots) if ((await stat2(join6(root,"steamapps")).catch(()=>null))?.isDirectory()) return root;
++      return null;
++    }
+     const steamExe = await resolveSteamExe();
+     return steamExe ? dirname31(steamExe) : null;
+   },
+@@ -79514,7 +79698,7 @@
+ });
+ app30.whenReady().then(() => withWatchdogOperation("startup", async () => {
+   Menu.setApplicationMenu(null);
+-  if (!config.isDev || process.env.MELTY_DEV_PROTOCOL === "1")
++  if (process.platform !== "linux" && (!config.isDev || process.env.MELTY_DEV_PROTOCOL === "1"))
+     app30.setAsDefaultProtocolClient(PROTOCOL);
+   if (config.isDev && process.env.MELTY_LOCAL_TEST === "1") {
+     session4.defaultSession.webRequest.onBeforeRequest({ urls: ["*://*/api/bugs*", "https://*.sentry.io/*"] }, (_details, callback) => callback({ cancel: true }));

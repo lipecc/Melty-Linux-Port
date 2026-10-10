@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Melty Linux Installer
+Exec=AppRun
+Icon=gg.melty.app
+Terminal=false
+Categories=Game;Utility;

@@ -1,11 +1,9 @@
-# Third-party licenses and branding
+# Third-party attribution and distribution notice
 
-This is an **unofficial** community port, not the official Melty application.
+This is an unofficial community adaptation of the Melty desktop application.
 
-- The **MIT license** applies only to original Linux port contributions in this repository.
-- The **upstream Melty Windows application**, including its bundled JS/ASAR, brand assets, and embedded third-party software, retains its own copyright and licensing terms. None of these are included as unmodified source files in this repository. Small patch context is included solely to document the required changes.
-- **Electron** is downloaded separately from its official release distribution. Electron and bundled Chromium/Node dependencies retain their respective licenses.
-- **Steam / Proton / Wine** and game assets are owned and licensed by their respective authors and rights holders.
-- The AppImage release built from an original Melty installer **contains upstream Melty assets and code**. Verify upstream redistribution permission before posting that binary publicly. This repo license does not grant permission to redistribute that material.
+The repository contains original Linux integration scripts, limited patch files for an upstream binary bundle, install UI source, and test cases. The official Windows Melty installer, original upstream binaries, original application assets, Electron binaries, and game mods are not included in the source package.
 
-If you are a rightsholder with a licensing concern, open an issue with the relevant component and file path.
+The authors of the Linux adaptation do not claim ownership of Melty or the underlying games, and do not assert permission to redistribute proprietary upstream code, images, or third-party mods. A community GitHub Release containing a compiled AppImage may contain upstream components; permission to distribute it is separate from permission to publish the Linux port source code.
+
+Steam, Proton, Linux, GNOME, and KDE names are used descriptively. No affiliation is implied.

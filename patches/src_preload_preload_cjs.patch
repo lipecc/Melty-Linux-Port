@@ -1,0 +1,22 @@
+--- a/src/preload/preload.cjs
++++ b/src/preload/preload.cjs
+@@ -169,15 +169,10 @@
+ }
+ 
+ // Windows draws the minimize / maximize / close buttons itself, over the page's top right.
+-if (USE_WINDOWS_TITLEBAR_OVERLAY) {
+-  addStyle(
+-    "melty-titlebar-style",
+-    `
+-      .desktop-window-controls { display: none !important; }
+-      .is-desktop .topbar { padding-right: 148px !important; }
+-    `
+-  );
+-}
++addStyle("melty-titlebar-style", `
++  .desktop-window-controls { display: none !important; }
++  ${USE_WINDOWS_TITLEBAR_OVERLAY ? ".is-desktop .topbar { padding-right: 148px !important; }" : ""}
++`);
+ 
+ // The rail and header stay put; only the page's content scrolls.
+ addStyle(

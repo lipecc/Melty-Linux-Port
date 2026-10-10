@@ -1,0 +1,12 @@
+--- a/package.json
++++ b/package.json
+@@ -14,5 +14,6 @@
+     "node-unrar-js": "2.0.2",
+     "yaml": "2.6.1"
+   },
+-  "homepage": "https://melty.gg"
+-}
+\ No newline at end of file
++  "homepage": "https://melty.gg",
++  "desktopName": "gg.melty.app.desktop"
++}
